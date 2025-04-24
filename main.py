@@ -2,45 +2,45 @@ import logging
 from User_fetcher import UserFetcher
 import json
 import os
+import threading
+import uvicorn
 
 #  Set this to True to remove users not in current API response
 REMOVE_OLD_USERS = True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-if __name__ == "__main__":
-
+def update_user_list():
+    """Main logic for user fetching and edgex_users.json maintenance."""
     list_of_users = UserFetcher().fetch_all_users()
 
     users = list_of_users.get("users")
     if users and isinstance(users, list):
-        logging.info(f"Number of users fetched: {len(users)}")
+        logger.info(f"Number of users fetched: {len(users)}")
 
         credentials_list = [user.get("credentials") for user in users if "credentials" in user]
-        logging.info(f"Credentials extracted: {credentials_list}")
+        logger.info(f"Credentials extracted: {credentials_list}")
     else:
-        logging.error("No users found or invalid response format.")
+        logger.error("No users found or invalid response format.")
         credentials_list = []
 
     usernames_list = [cred["identity"] for cred in credentials_list if "identity" in cred]
-    logging.info(f"Usernames_list extracted: {usernames_list}")
+    logger.info(f"Usernames_list extracted: {usernames_list}")
 
-    # Extract actual usernames from email
     current_usernames = {email.split("@", 1)[0] for email in usernames_list if "@" in email}
     current_usernames.add("admin")  # Always include admin
 
-    # Load existing data
     existing_data = {}
     if os.path.exists("edgex_users.json"):
         try:
             with open("edgex_users.json", "r") as f:
                 existing_users = json.load(f)
                 existing_data = {entry["username"]: entry["token"] for entry in existing_users}
-                logging.info("Existing edgex_users.json loaded.")
+                logger.info("Existing edgex_users.json loaded.")
         except Exception as e:
-            logging.error(f"Error reading existing JSON: {e}")
+            logger.error(f"Error reading existing JSON: {e}")
 
-    # Merge or preserve data
     edgex_user_data = []
     for username in current_usernames:
         token = existing_data.get(username, "")
@@ -49,7 +49,6 @@ if __name__ == "__main__":
             "token": token
         })
 
-    # If REMOVE_OLD_USERS is False, keep old ones not in API
     if not REMOVE_OLD_USERS:
         for username, token in existing_data.items():
             if username not in current_usernames:
@@ -57,12 +56,24 @@ if __name__ == "__main__":
                     "username": username,
                     "token": token
                 })
-        logging.info("Old users retained.")
+        logger.info("Old users retained.")
 
-    # Write back
     try:
         with open("edgex_users.json", "w") as f:
             json.dump(edgex_user_data, f, indent=4)
-        logging.info("edgex_users.json updated successfully.")
+        logger.info("edgex_users.json updated successfully.")
     except Exception as e:
-        logging.error(f"Error writing to JSON file: {e}")
+        logger.error(f"Error writing to JSON file: {e}")
+
+def run_api():
+    """Run FastAPI server in a separate thread."""
+    logger.info("Starting FastAPI server...")
+    uvicorn.run("api_cronjob:app_1", host="0.0.0.0", port=4568, reload=False)
+
+if __name__ == "__main__":
+    # Run FastAPI server in a separate thread
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+
+    # Run the user updater
+    update_user_list()
